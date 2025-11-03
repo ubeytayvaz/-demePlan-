@@ -16,17 +16,18 @@ if uploaded_file is not None:
     try:
         # --- 2. Veri Okuma ve İşleme ---
 
-        # Dosya buffer'ını sıfırla (birden fazla okuma için)
+        # --- A. Metadata Okuma (Satır 2, 3, 4) ---
+        # Dosya buffer'ını sıfırla
         uploaded_file.seek(0)
-        
-        # --- A. Metadata Okuma (İlk 3 Satır) ---
-        # Dosyanın ilk 3 satırından A ve B sütunlarını (index 0 ve 1) oku
+        # Veri, CSV'nin 2. satırından (index 1) başlıyor
         metadata_df = pd.read_csv(
             uploaded_file,
             header=None,       # Başlık satırı yok
-            nrows=3,           # Sadece ilk 3 satırı oku
+            skiprows=1,        # İlk satırı (boş) atla
+            nrows=3,           # 3 satır (Başlangıç, Taksit, Toplam) oku
             usecols=[0, 1],    # Sadece ilk iki sütunu al
-            encoding='utf-8'   # Türkçe karakterler için
+            encoding='utf-8',  # Türkçe karakterler için
+            engine='python'    # Hatalı satırları daha iyi işlemesi için
         )
         
         # Okunan metadatayı bir sözlük (dictionary) yapısına çevir
@@ -37,16 +38,22 @@ if uploaded_file is not None:
         # Dosya buffer'ını tekrar sıfırla
         uploaded_file.seek(0)
         
-        # Asıl tablo 6. satırda başlıyor (0'dan sayınca)
-        # 7. satır başlık (header) oluyor, bu yüzden skiprows=6
+        # Asıl tablo 6. satırda (index 5) başlıyor (başlık)
         df = pd.read_csv(
             uploaded_file,
-            skiprows=6,        # İlk 6 satırı atla
+            header=5,          # 6. satır (index 5) başlık satırıdır
             index_col=0,       # İlk sütunu (1, 2, 3, 4) index yap
             encoding='utf-8',
-            decimal='.',       # Ondalık ayıracı
-            thousands=None     # Binlik ayıracı yok
+            decimal='.',
+            thousands=None,
+            engine='python'
         )
+
+        # Okuduktan sonra, 'Unnamed' gibi istenmeyen sütunları kaldır
+        df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
+        # Tamamen NaN olan satırları (varsa) kaldır
+        df.dropna(how='all', inplace=True)
+
 
         # --- 3. Veri Temizleme ve Dönüştürme ---
         
@@ -57,32 +64,44 @@ if uploaded_file is not None:
         baslangic_tarihi = pd.to_datetime(baslangic_tarihi_str)
 
         # Ana DataFrame'deki sütunları sayısal değerlere dönüştür
-        # Hata olursa zorlama (errors='coerce'), bu sayede hatalı veri varsa NaN olur
         df['Taksit Tutarı'] = pd.to_numeric(df['Taksit Tutarı'], errors='coerce')
         df['Min.'] = pd.to_numeric(df['Min.'], errors='coerce')
         df['Tam'] = pd.to_numeric(df['Tam'], errors='coerce')
         df['Max'] = pd.to_numeric(df['Max'], errors='coerce')
+        if 'Taksit Yüzdesi' in df.columns:
+            df['Taksit Yüzdesi'] = pd.to_numeric(df['Taksit Yüzdesi'], errors='coerce')
+
+        # Tüm olası ödeme tarihlerini en başta hesapla
+        min_gun_farki = pd.to_timedelta(df['Min.'], unit='D')
+        tam_gun_farki = pd.to_timedelta(df['Tam'], unit='D')
+        max_gun_farki = pd.to_timedelta(df['Max.'], unit='D')
+        
+        df['Min. Ödeme Tarihi'] = (baslangic_tarihi + min_gun_farki)
+        df['Tam Ödeme Tarihi'] = (baslangic_tarihi + tam_gun_farki)
+        df['Max. Ödeme Tarihi'] = (baslangic_tarihi + max_gun_farki)
 
         # --- 4. Arayüzü Oluşturma (Streamlit UI) ---
 
-        st.header("Poliçe Özeti")
+        st.header("Poliçe Özeti ve Ödeme Simülatörü")
         
-        # Özeti 3 sütunda göster
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Toplam Prim", f"{toplam_prim:,.2f} TL")
-        col2.metric("Taksit Sayısı", int(taksit_sayisi))
-        col3.metric("Başlangıç Tarihi", baslangic_tarihi.strftime('%d-%m-%Y'))
-
-        st.subheader("Orijinal Taksit Planı Verileri")
-        # DataFrame'i formatlayarak göster
-        st.dataframe(df.style.format({
-            "Taksit Tutarı": "{:,.2f} TL",
-            "Taksit Yüzdesi": "{:.0%}"
-        }))
+        # Özeti Excel'e benzer şekilde (Başlık - Değer) göster
+        col1, col2, col3 = st.columns([1, 2, 3]) # Sütun genişlikleri
+        with col1:
+            st.markdown("---") # Ayırıcı
+            st.markdown(f"**Başlangıç Tarihi:**")
+            st.markdown(f"**Taksit Sayısı:**")
+            st.markdown(f"**Toplam Prim:**")
+            st.markdown("---") # Ayırıcı
+        with col2:
+            st.markdown("---") # Ayırıcı
+            st.markdown(f"{baslangic_tarihi.strftime('%d-%m-%Y')}")
+            st.markdown(f"{int(taksit_sayisi)}")
+            st.markdown(f"{toplam_prim:,.2f} TL")
+            st.markdown("---") # Ayırıcı
 
         # --- 5. Etkileşimli Plan Seçimi ---
-
-        st.header("Ödeme Planı Simülatörü")
+        
+        st.subheader("Ödeme Planı Seçimi")
         
         # Seçenekleri ve karşılık gelen sütun adlarını eşleştir
         plan_mapping = {
@@ -99,35 +118,49 @@ if uploaded_file is not None:
             key="plan_secimi"
         )
         
-        # Seçilen plana göre ilgili sütun adını al (örn: "Min.")
-        secilen_sutun = plan_mapping[secilen_plan_adi]
+        # Seçilen plana göre ilgili sütun adlarını al
+        secilen_sutun_gun = plan_mapping[secilen_plan_adi] # "Min.", "Tam" veya "Max"
+        secilen_sutun_tarih = f"{secilen_sutun_gun} Ödeme Tarihi" # "Min. Ödeme Tarihi", ...
         
         # --- 6. Hesaplama ve Sonuçları Gösterme ---
 
-        # Sonuçları göstermek için yeni bir DataFrame oluştur
-        plan_df = pd.DataFrame(index=df.index)
-        plan_df['Taksit Tutarı'] = df['Taksit Tutarı'].copy()
+        # Gösterilecek DataFrame'i oluştur
+        gosterilecek_df = pd.DataFrame(index=df.index)
+        gosterilecek_df['Taksit Tutarı'] = df['Taksit Tutarı']
+        if 'Taksit Yüzdesi' in df.columns:
+            gosterilecek_df['Taksit Yüzdesi'] = df['Taksit Yüzdesi']
         
-        # Seçilen plandaki gün farkını 'timedelta' objesine çevir
-        # Örn: 89 -> 89 gün
-        gun_farki = pd.to_timedelta(df[secilen_sutun], unit='D')
+        # Orijinal 'Tam' plana göre tarihi ekle (Excel'deki 'Ödeme Tarihi' sütunu)
+        gosterilecek_df['Varsayılan Vade (Tam)'] = df['Tam Ödeme Tarihi']
         
-        # Yeni ödeme tarihini hesapla: Başlangıç Tarihi + Gün Farkı
-        plan_df['Hesaplanan Ödeme Tarihi'] = (baslangic_tarihi + gun_farki)
+        # Seçilen plana göre sütunları ekle
+        gosterilecek_df[f'Seçilen Plan ({secilen_sutun_gun}) - Gün'] = df[secilen_sutun_gun]
+        gosterilecek_df['Hesaplanan Vade'] = df[secilen_sutun_tarih]
         
-        # 'Tam' plana göre ne kadar erken/geç olduğunu hesapla
-        plan_df['Fark (Güne Göre)'] = df[secilen_sutun] - df['Tam']
+        # 'Tam' plana göre fark
+        gosterilecek_df['Vade Farkı (Gün)'] = df[secilen_sutun_gun] - df['Tam']
+
+        st.subheader(f"'{secilen_plan_adi}' Planına Göre Ödeme Tablosu")
         
-        st.subheader(f"'{secilen_plan_adi}' Planına Göre Hesaplanan Tarihler")
-        
-        # Hesaplanan yeni planı formatlayarak göster
-        st.dataframe(plan_df.style.format({
+        # Stilleri ve formatı tanımla
+        format_dict = {
             "Taksit Tutarı": "{:,.2f} TL",
-            "Hesaplanan Ödeme Tarihi": lambda dt: dt.strftime('%d-%m-%Y') # Tarih formatı
-        }))
+            "Taksit Yüzdesi": "{:.0%}",
+            "Varsayılan Vade (Tam)": lambda dt: dt.strftime('%d-%m-%Y'),
+            f'Seçilen Plan ({secilen_sutun_gun}) - Gün': "{:.0f}",
+            "Hesaplanan Vade": lambda dt: dt.strftime('%d-%m-%Y'),
+            "Vade Farkı (Gün)": "{:+.0f}" # Artı/eksi işaretiyle göster
+        }
+
+        # Sadece 'Taksit Yüzdesi' varsa formatlamaya dahil et
+        if 'Taksit Yüzdesi' not in gosterilecek_df.columns:
+            del format_dict['Taksit Yüzdesi']
+
+        # DataFrame'i formatlayarak göster
+        st.dataframe(gosterilecek_df.style.format(format_dict))
         
         # Ek bir bilgi notu
-        ortalama_fark = plan_df['Fark (Güne Göre)'].mean()
+        ortalama_fark = gosterilecek_df['Vade Farkı (Gün)'].mean()
         if ortalama_fark < 0:
             st.info(f"Bu plan, 'Tam Zamanında' plana göre taksit başı ortalama {abs(ortalama_fark):.1f} gün **erken** ödeme yapmanızı sağlar.")
         elif ortalama_fark > 0:
@@ -137,26 +170,11 @@ if uploaded_file is not None:
 
     except Exception as e:
         # Hata olması durumunda kullanıcıyı bilgilendir
-        st.error(f"Dosya okunurken bir hata oluştu: {e}")
-        st.warning("Lütfen yüklediğiniz dosyanın formatının örnekteki gibi olduğundan emin olun.")
-        st.code(
-            """
-            Örnek CSV Formatı:
-            
-            Başlangıç,2025-02-01,,,,,
-            Taksit Sayısı,4,,,,,
-            Toplam Prim,100000,,,,,
-            (Boş Satır)
-            (Boş Satır)
-            (Boş Satır)
-            ,Taksit Tutarı,Ödeme Tarihi,Min.,Tam,Max,Taksit Yüzdesi
-            1,25000,2025-05-10,89,98,119,0.25
-            2,25000,2025-07-10,150,159,180,0.25
-            ...
-            """,
-            language="text"
-        )
+        st.error(f"Dosya okunurken veya işlenirken bir hata oluştu: {e}")
+        st.warning("Lütfen yüklediğiniz dosyanın formatının beklenen yapıda olduğundan emin olun.")
+        st.exception(e) # Detaylı hata dökümü için
 
 else:
     # Dosya yüklenmediyse bilgilendirme mesajı göster
     st.info("Lütfen başlamak için bir CSV dosyası yükleyin.")
+

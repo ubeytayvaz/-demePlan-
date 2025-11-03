@@ -1,159 +1,211 @@
 import streamlit as st
-import pandas as pd
-import io
-import datetime
-from dateutil.relativedelta import relativedelta
+import requests
+from bs4 import BeautifulSoup
+import re
 
-def recalculate_plan(toplam_prim, taksit_sayisi, ilk_odeme_tarihi, odeme_araligi_ay):
+def fetch_ad_details(url):
     """
-    Verilen parametrelere göre ödeme planı tablosunu yeniden oluşturur.
+    Verilen sahibinden.com URL'sinden ilan detaylarını çekmeyi dener.
     """
-    new_data = []
-    
-    # Eşit taksit tutarını ve yüzdeyi hesapla
-    taksit_tutari = round(toplam_prim / taksit_sayisi, 2)
-    taksit_yuzdesi = 1 / taksit_sayisi
-    
-    current_date = ilk_odeme_tarihi
-    
-    for i in range(1, taksit_sayisi + 1):
-        new_data.append({
-            'Taksit Tutarı': taksit_tutari,
-            'Ödeme Tarihi': current_date,
-            'Min.': 0.0, # Bu alanlar kullanıcı tarafından doldurulabilir
-            'Tam': 0.0,
-            'Max': 0.0,
-            'Taksit Yüzdesi': taksit_yuzdesi
-        })
-        # Bir sonraki ödeme tarihini hesapla
-        current_date = current_date + relativedelta(months=odeme_araligi_ay)
-        
-    # Yeni DataFrame'i oluştur (index 1'den başlasın)
-    new_df = pd.DataFrame(new_data, index=pd.RangeIndex(start=1, stop=taksit_sayisi+1))
-    new_df.index.name = "Taksit No"
-    
-    # 'Ödeme Tarihi' sütununun formatını düzelt (sadece tarih)
-    new_df['Ödeme Tarihi'] = pd.to_datetime(new_df['Ödeme Tarihi']).dt.date
-    
-    return new_df
-
-# --- Streamlit Uygulaması ---
-
-st.set_page_config(layout="wide")
-st.title("📊 Sıfırdan Ödeme Planı Oluşturucu")
-
-st.header("1. Plan Parametrelerini Girin")
-st.markdown("Aşağıdaki değerleri girip 'Planı Oluştur' butonuna basarak taslak bir tablo oluşturabilirsiniz.")
-
-# Ayar girişleri için sütunlar
-# Önceki excel'deki verileri varsayılan olarak kullanalım
-col1, col2, col3, col4 = st.columns(4)
-
-with col1:
-    toplam_prim = st.number_input(
-        "Toplam Prim", 
-        value=100000.0,
-        format="%.2f"
-    )
-with col2:
-    taksit_sayisi = st.number_input(
-        "Taksit Sayısı", 
-        min_value=1, 
-        step=1, 
-        value=4
-    )
-with col3:
-    # Örnek dosyadaki ilk ödeme tarihini varsayılan al
-    ilk_odeme_tarihi = st.date_input(
-        "İlk Ödeme Tarihi", 
-        value=datetime.date(2025, 5, 10)
-    )
-with col4:
-    # Örnek dosyanızdaki aralığı varsayılan al (Mayıs -> Temmuz = 2 ay)
-    odeme_araligi_ay = st.number_input(
-        "Ödeme Aralığı (Ay)", 
-        min_value=1, 
-        step=1, 
-        value=2
-    )
-
-# Planı oluşturma butonu
-if st.button("🔄 Planı Oluştur", type="primary", use_container_width=True):
-    new_df = recalculate_plan(toplam_prim, taksit_sayisi, ilk_odeme_tarihi, odeme_araligi_ay)
-    st.session_state.df = new_df # DataFrame'i session state'e kaydet
-    st.success("Ödeme planı taslağı oluşturuldu. Şimdi aşağıdan düzenleyebilirsiniz.")
-
-st.divider()
-
-# 2. İnteraktif Tablo (Data Editor)
-# Sadece plan oluşturulduysa (st.session_state.df varsa) göster
-if 'df' in st.session_state:
-    st.header("2. Planı Düzenleyin ve İndirin")
-    st.info("Bu tabloyu Excel gibi çift tıklayarak düzenleyebilir, 'Min.', 'Tam', 'Max' alanlarını doldurabilir, satır ekleyebilir veya silebilirsiniz.")
-
-    # st.data_editor, kullanıcıya tabloyu düzenleme imkanı verir.
-    # Değişiklikler 'edited_df' değişkenine atanır.
-    edited_df = st.data_editor(
-        st.session_state.df,
-        num_rows="dynamic", # Satır ekleme/silmeyi etkinleştir
-        use_container_width=True,
-        column_config={
-            "Ödeme Tarihi": st.column_config.DateColumn(
-                "Ödeme Tarihi",
-                format="YYYY-MM-DD",
-            ),
-            "Taksit Tutarı": st.column_config.NumberColumn(
-                "Taksit Tutarı",
-                format="%.2f ₺",
-            ),
-            "Min.": st.column_config.NumberColumn("Min.", format="%.2f"),
-            "Tam": st.column_config.NumberColumn("Tam", format="%.2f"),
-            "Max": st.column_config.NumberColumn("Max", format="%.2f"),
-            "Taksit Yüzdesi": st.column_config.ProgressColumn(
-                "Taksit Yüzdesi",
-                format="%.2f",
-                min_value=0,
-                max_value=1,
-            ),
+    try:
+        # Sahibinden.com'un bot engellemesini aşmak için bir tarayıcı gibi davranıyoruz.
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
-    )
+        
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status() # Hata varsa (404, 500 vb.) yakala
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        details = {
+            "title": "Bulunamadı",
+            "price": "Bulunamadı",
+            "plate": None,
+            "painted": [],
+            "replaced": [],
+            "description": "Açıklama bulunamadı."
+        }
+
+        # İlan Başlığı
+        title_tag = soup.find('h1', class_='classifiedDetailTitle')
+        if title_tag:
+            details['title'] = title_tag.get_text(strip=True)
+            
+        # Fiyat
+        price_tag = soup.find('div', class_='classifiedInfo').find('h3')
+        if price_tag:
+            details['price'] = price_tag.get_text(strip=True).replace('TL', '').strip() + " TL"
+            
+        # Plaka (Genellikle "Teknik Özellikler" veya "Özellikler" listesinde olur)
+        # Bazen satıcılar plakayı "Belirtilmemiş" olarak girer veya hiç girmez.
+        properties_list = soup.select('div.classifiedProperties ul li')
+        
+        for item in properties_list:
+            strong_tag = item.find('strong')
+            if strong_tag and 'Plaka' in strong_tag.get_text():
+                span_tag = item.find('span')
+                if span_tag:
+                    plate_text = span_tag.get_text(strip=True)
+                    # "Belirtilmemiş", "Yabancı Plaka" gibi durumları filtrele
+                    if plate_text and "Belirtilmemiş" not in plate_text and "Yabancı" not in plate_text:
+                        # Plakayı temizle (örn: 34 ABC 123 -> 34ABC123)
+                        details['plate'] = re.sub(r'\s+', '', plate_text).upper()
+                        break
+
+        # --- YENİ BÖLÜM: Boya/Değişen ve Açıklama ---
+        
+        # 1. Boya & Değişen Bilgisi
+        # Sahibinden'in yapısı: <h3>Boya & Değişen</h3>, sonra <ul><li><h4>Boyalı..</h4><ul><li>...</li></ul></li><li><h4>Değişen..</h4><ul>...</ul></li></ul>
+        paint_header = soup.find('h3', string=re.compile(r'Boya & Değişen'))
+        if paint_header:
+            main_ul = paint_header.find_next_sibling('ul')
+            if main_ul:
+                # Boyalı Parçalar
+                boyali_li = main_ul.find('h4', string=re.compile(r'Boyalı Parçalar'))
+                if boyali_li:
+                    boyali_ul = boyali_li.find_next_sibling('ul')
+                    if boyali_ul:
+                        selected = boyali_ul.find_all('li', class_='selected')
+                        details['painted'] = [li.get_text(strip=True) for li in selected]
+
+                # Değişen Parçalar
+                degisen_li = main_ul.find('h4', string=re.compile(r'Değişen Parçalar'))
+                if degisen_li:
+                    degisen_ul = degisen_li.find_next_sibling('ul')
+                    if degisen_ul:
+                        selected = degisen_ul.find_all('li', class_='selected')
+                        details['replaced'] = [li.get_text(strip=True) for li in selected]
+
+        if not details['painted']:
+            details['painted'] = ["Satıcı tarafından belirtilmemiş."]
+        if not details['replaced']:
+            details['replaced'] = ["Satıcı tarafından belirtilmemiş."]
+
+        # 2. İlan Açıklaması
+        description_div = soup.find('div', id='classifiedDescription')
+        if description_div:
+            # Metni al ve gereksiz boşlukları temizle
+            details['description'] = ' '.join(description_div.get_text(strip=True).split())
+        
+        # --- BİTİŞ: Yeni Bölüm ---
+                        
+        return details
+
+    except requests.exceptions.RequestException as e:
+        st.error(f"İlana ulaşılamadı. Sahibinden.com erişimi engellemiş olabilir veya link hatalı. Hata: {e}")
+        return None
+    except Exception as e:
+        st.error(f"Veri ayrıştırılırken bir hata oluştu: {e}")
+        return None
+
+# --- Streamlit Arayüzü ---
+
+st.set_page_config(layout="wide", page_title="Sahibinden İlan Yardımcısı")
+
+st.title("🚗 Sahibinden İlan Yardımcısı")
+st.markdown("---")
+
+st.info(
+    "**ÖNEMLİ UYARI:** Bu uygulama, satıcının ilana girdiği **beyanları** (işaretlediği boya/değişen durumu) ve **ilan açıklamasını** çeker."
+    "\n\nBu bilgiler satıcının kendi girdiği bilgilerdir, **resmi kayıt DEĞİLDİR**."
+    "\nResmi Hasar Kaydı (TRAMER) sorgusu için plakayı alıp **5664**'e SMS atmanız (ücretli) gerekir."
+)
+
+st.markdown("### 1. Adım: İlan Linkini Yapıştırın")
+url = st.text_input("Sahibinden.com araç ilanının tam URL'sini buraya yapıştırın:", placeholder="https://www.sahibinden.com/ilan/...")
+
+if st.button("İlan Bilgilerini Getir", type="primary"):
+    if not url or "sahibinden.com" not in url:
+        st.warning("Lütfen geçerli bir sahibinden.com ilanı URL'si girin.")
+    else:
+        with st.spinner("İlan bilgileri getiriliyor..."):
+            details = fetch_ad_details(url)
+            st.session_state.details = details # Detayları oturumda sakla
+
+if 'details' in st.session_state and st.session_state.details:
+    details = st.session_state.details
     
-    # Kullanıcının yaptığı manuel değişiklikleri state'e geri kaydet
-    # Bu, manuel değişikliklerin kalıcı olmasını sağlar.
-    st.session_state.df = edited_df
-
-    # 3. Güncel Veriyi İndirme
-    st.divider()
-    st.header("3. Güncel Planı İndir")
+    st.markdown("---")
+    st.subheader("İlandan Alınan Bilgiler")
     
-    # Düzenlenen en son halini CSV'ye çevir
-    csv_data = edited_df.to_csv(index=True, encoding='utf-8')
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric(label="İlan Başlığı", value=details['title'])
+    with col2:
+        st.metric(label="Fiyat", value=details['price'])
+
+    # --- YENİ BÖLÜM: Satıcı Beyanı ---
+    st.markdown("---")
+    st.subheader("Satıcının Boya/Değişen Beyanı (İlanda İşaretledikleri)")
     
-    st.download_button(
-        label="📈 Güncel Planı CSV Olarak İndir",
-        data=csv_data,
-        file_name="guncel_odeme_plani.csv",
-        mime="text/csv",
-        use_container_width=True
-    )
-
-else:
-    st.info("Lütfen yukarıdaki formu doldurarak bir ödeme planı oluşturun.")
-
-```
-
-### Nasıl Çalışır?
-
-1.  **Gerekli Kütüphaneleri Yükleyin** (Eğer daha önce yüklemediyseniz):
-    ```bash
-    pip install streamlit pandas
-    ```
-
-2.  **Kodu Kaydedin:**
-    Yukarıdaki kodu `app.py` adıyla kaydedin.
-
-3.  **Streamlit'i Başlatın:**
-    Terminalde `app.py` dosyasının olduğu dizine gidin ve çalıştırın:
-    ```bash
-    streamlit run app.py
+    col_boya, col_degisen = st.columns(2)
     
+    with col_boya:
+        st.write("🎨 **Boyalı Parçalar**")
+        if details['painted'] and details['painted'][0] != "Satıcı tarafından belirtilmemiş.":
+            # Liste olarak göster
+            st.markdown('\n'.join(f'- {p}' for p in details['painted']))
+        else:
+            st.info("Satıcı boyalı parça belirtmemiş.")
+            
+    with col_degisen:
+        st.write("🛠️ **Değişen Parçalar**")
+        if details['replaced'] and details['replaced'][0] != "Satıcı tarafından belirtilmemiş.":
+            # Liste olarak göster
+            st.markdown('\n'.join(f'- {p}' for p in details['replaced']))
+        else:
+            st.info("Satıcı değişen parça belirtmemiş.")
+
+    # --- YENİ BÖLÜM: İlan Açıklaması ---
+    st.markdown("---")
+    st.subheader("İlan Açıklaması Analizi")
+    
+    desc_lower = details['description'].lower()
+    # "kaydı" kelimesini ekleyerek "hasar kaydı" tamlamasını daha iyi yakalayabiliriz
+    damage_keywords = ['tramer', 'hasar kaydı', 'hasar', 'kaydı', 'boyalı', 'değişen', 'lokal', 'çizik', 'kaza', 'boya', 'değişim']
+    # Tekrar eden kelimeleri kaldır
+    found_keywords = sorted(list(set([k for k in damage_keywords if k in desc_lower])))
+    
+    if found_keywords:
+        st.write("**Açıklamada Bulunan Hasar/Boya İlgili Anahtar Kelimeler:**")
+        # Kelimeleri daha okunaklı göster
+        st.warning(f"`{', '.join(found_keywords)}`")
+    else:
+        st.success("**Açıklamada Hasar Belirten Anahtar Kelime Bulunmadı.**")
+        
+    with st.expander("Açıklamanın tamamını görmek için tıklayın..."):
+        st.info(details['description'])
+
+
+    st.markdown("---")
+    st.markdown("### 2. Adım: Resmi Hasar Kaydı (TRAMER) Sorgusu")
+    st.write("Yukarıdaki bilgiler satıcının beyanıdır. Doğrulamak için 5664'e SMS gönderebilirsiniz.")
+
+    plate_to_query = None
+
+    if details['plate']:
+        st.success(f"**Plaka ilanda bulundu:** {details['plate']}")
+        plate_to_query = details['plate']
+    else:
+        st.warning("Plaka ilanda bulunamadı, gizlenmiş veya 'Belirtilmemiş' olarak girilmiş.")
+        st.write("Lütfen plakayı ilandaki fotoğraflardan veya satıcıdan alarak aşağıdaki kutuya manuel girin.")
+        
+    manual_plate = st.text_input("Plakayı Girin (Bitişik, örn: 34ABC1234)", 
+                                 value=details['plate'] if details['plate'] else "",
+                                 help="Plakayı bitişik olarak yazın.")
+                                 
+    if manual_plate:
+        plate_to_query = re.sub(r'\s+', '', manual_plate).upper()
+
+    if plate_to_query:
+        st.markdown("---")
+        st.subheader("Hazır SMS Metni")
+        st.write("Aşağıdaki metnin tamamını kopyalayıp telefonunuzdan **5664**'e SMS olarak gönderin (Ücretlidir).")
+        
+        st.code(f"DETAY {plate_to_query}", language=None)
+        
+        st.write("Diğer sorgu türleri:")
+        st.code(f"PARCA {plate_to_query} [Tarih (gg/aa/yyyy)]", language=None)
+        st.code(f"SASENO [Şasi Numarası]", language=None)
+

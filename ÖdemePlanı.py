@@ -9,8 +9,15 @@ def fetch_ad_details(url):
     """
     try:
         # Sahibinden.com'un bot engellemesini aşmak için bir tarayıcı gibi davranıyoruz.
+        # 403 Hatasını (Forbidden) aşmak için User-Agent ve diğer başlıkları güncelledik.
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36',
+            'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Referer': 'https://www.sahibinden.com/', # Nereden geldiğimizi belirtmek (ana sayfa)
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1', # HTTPS'e yükseltme talebi
         }
         
         response = requests.get(url, headers=headers, timeout=10)
